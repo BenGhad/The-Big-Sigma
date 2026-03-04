@@ -7,6 +7,20 @@ from ...schemas.modeling import ModelArtifact as ModelArtifactSchema
 from ..models import ModelArtifact
 
 
+def _normalize_tuning_for_schema(tuning: dict | None) -> dict | None:
+    if tuning is None:
+        return None
+
+    # Backward compatibility: older rows may store request TuneSpec
+    # (enabled/max_trials/search) while response schema expects TuningSummary.
+    if "enabled" in tuning and (
+        "searched_fields" not in tuning and "best_hyperparams" not in tuning
+    ):
+        return {"enabled": bool(tuning.get("enabled"))}
+
+    return tuning
+
+
 def create_model_artifact(
     db: Session,
     *,
@@ -90,7 +104,7 @@ def model_artifact_to_schema(artifact: ModelArtifact) -> ModelArtifactSchema:
             "split": artifact.split,
             "preprocessing": artifact.preprocessing,
             "hyperparams": artifact.hyperparams,
-            "tuning": artifact.tuning,
+            "tuning": _normalize_tuning_for_schema(artifact.tuning),
             "metrics": artifact.metrics,
             "coefficients": artifact.coefficients,
             "created_at": artifact.created_at,
