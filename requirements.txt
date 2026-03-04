@@ -1,0 +1,5 @@
+pip~=24.0
+pydantic~=2.12.5
+typing_extensions~=4.15.0
+pydantic_core~=2.41.5
+annotated-types~=0.7.0
