@@ -1,0 +1,31 @@
+so like
+
+im not gonna touch the frontned for a bit, but like, api yk
+
+upload data(csv file) return fileid
+view_data(file : id so int, filters : idk but it should have sql-like elements for replayability, sort_by : comparator_idk_enum, sort_col : int, highlights = {}) # tfw no overload in python, c++ would have aura but then no numpy and thats not fun, rust would be nice also
+    get my data idk
+
+save_data(file: id, filters) # basically view_data but the data is saved and can be called
+
+
+# train models, probably oop this
+lin/log/softmax/xyz reg(
+data
+modelType
+trainType = # eg sgd variation
+# optional params
+hyperparams = [] # only do train-validation on what's missing (if nothing missing then skip)
+test_holdout : int
+validation_holdout : int # ignored based on hyperparams, gonna need a LOT of frontend enforcement here
+is_time_series : bool
+y_cols : []
+)
+
+get_models(optional list of which models)
+get_model
+
+useModels(models, data)
+returns the model predictions and accuracy and then frontend does visuals
+
+
