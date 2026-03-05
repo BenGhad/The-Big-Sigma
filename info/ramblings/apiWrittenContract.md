@@ -15,7 +15,8 @@
 
 - All timestamps are ISO 8601 strings.
 - IDs are ints(pythong BIGINTBIGINTBIGINTBIGINTBIGINTBIGINT).
-- Backend errors are consistent but like there aren't any so who cares.
+- App/domain errors from `ApiException` use `{ error: { code, message, details? } }`.
+- FastAPI request validation/parsing errors keep default `{ detail: ... }` shape.
 - Offset pagination default is `limit=50` and `offset=0` (max `limit=1000`) for list/query endpoints.
 - `POST .../query` returns `rows` `total_rows` `returned_rows` `applied_query` `next_offset`.
 - CONCURRENT JOBS - MUTEXES? MAYBE!!! LOCKS?? MAYBE!!! I DIDN'T TAKE COMP 409, BECAUSE I HAD TO MAKE ROOM FOR 595 (bars)
@@ -93,6 +94,15 @@ type QuerySpec = {
 
 
   // UX helper maybe
+  highlights?: HighlightRule[]
+}
+
+type QuerySpecPatch = {
+  select?: string[]              // columns to return
+  filters?: FilterClause[]
+  sort?: SortClause[]
+  limit?: number                 // max 1000
+  offset?: number
   highlights?: HighlightRule[]
 }
 
@@ -242,7 +252,7 @@ type TrainModelRequest = {
   y_cols: string[]               // multi-target, might freak up 2-d visuals 
 
   // optional subset before training
-  query?: QuerySpec
+  query?: QuerySpecPatch
 
   split?: SplitSpec
   preprocessing?: PreprocessSpec
@@ -351,7 +361,7 @@ type ModelArtifact = {
 type PredictRequest = {
     model_ids: ID[]
     dataset_id: ID
-    query?: QuerySpec               // subset to predict on
+    query?: QuerySpecPatch          // subset to predict on
 }
 type PredictionRow = {
     row_index: number
@@ -396,9 +406,25 @@ Base URL: `/v1`
 
 Errors:
 
+App/domain error envelope (`ApiException`):
+
 ```json
 {
   "error": { "code": "string", "message": "string", "details": {} }
+}
+```
+
+FastAPI validation/parsing error envelope:
+
+```json
+{
+  "detail": [
+    {
+      "loc": ["body", "..."],
+      "msg": "string",
+      "type": "string"
+    }
+  ]
 }
 ```
 
@@ -539,6 +565,7 @@ Response `201` → `SavedView`
 ### `GET /v1/datasets/:dataset_id/views`
 
 List saved views for dataset.
+* Query params (optional): `limit`, `offset`
 Response `200`
 
 ```json
@@ -581,7 +608,8 @@ Merge rules (this matters for the API behavior):
 
 List models.
 
-* Query params (optional): `dataset_id`, `model_type`, `limit`, `offset`
+* Query params (optional): `dataset_id`, `limit`, `offset`
+* `model_type` is accepted by the route currently but ignored (reserved for future filtering)
 
 Response `200`
 
@@ -616,7 +644,7 @@ Response `202` → `ModelJob`
   "status": "queued",
   "request": { /* TrainModelRequest */ },
   "created_at": "2026-03-04T12:34:56Z",
-  "progress": 0
+  "progress": null
 }
 ```
 
@@ -659,7 +687,11 @@ v1 decision: keep both endpoints.
 Run prediction synchronously because.
 Body: `PredictRequest`
 
-Response `200`
+Current backend behavior:
+
+* Returns `501` with `code="PREDICTION_NOT_IMPLEMENTED"` until prediction service is implemented.
+
+Planned behavior once implemented: response `200`
 
 If request is too large for sync policy, return `409` with:
 
@@ -698,6 +730,7 @@ Response `202` → `PredictionJob`
 
 ### `GET /v1/prediction-jobs`
 Poll all statuses
+* Query params (optional): `dataset_id`, `status`, `limit`, `offset`
 Response `200` → `list[PredictionJob]`
 ### `GET /v1/prediction-jobs/:job_id`
 
@@ -727,4 +760,5 @@ lol imagine learning from inline annotations
 * `404` not found
 * `409` conflict (e.g., delete blocked, concurrent job policy)
 * `422` semantic validation failed (query/train/predict rules)
+* `501` feature not implemented yet
 * `500` internal error
