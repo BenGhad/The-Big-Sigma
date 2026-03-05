@@ -696,6 +696,9 @@ Body: `PredictRequest`
 
 Response `202` → `PredictionJob`
 
+### `GET /v1/prediction-jobs`
+Poll all statuses
+Response `200` → `list[PredictionJob]`
 ### `GET /v1/prediction-jobs/:job_id`
 
 Poll status.

@@ -18,7 +18,12 @@ Timestamp = datetime
 class SchemaModel(BaseModel):
     model_config = ConfigDict(extra="forbid", from_attributes=True)
 
-
+# Todo generalize status FSM
+"""
+ Queued -> Running ->   Completed*
+        -> Canceled*    Failed*
+                        Canceled*
+"""
 class JobStatus(str, Enum):
     QUEUED = "queued"
     RUNNING = "running"

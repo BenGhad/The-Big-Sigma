@@ -16,6 +16,7 @@ from .model_artifacts import (
 )
 from .model_jobs import (
     append_model_job_log,
+    cancel_model_job,
     count_model_jobs,
     create_model_job,
     delete_model_job,
@@ -25,6 +26,7 @@ from .model_jobs import (
     set_model_job_status,
 )
 from .prediction_jobs import (
+    cancel_prediction_job,
     count_prediction_jobs,
     create_prediction_job,
     delete_prediction_job,
@@ -67,6 +69,7 @@ __all__ = [
     "get_model_job",
     "list_model_jobs",
     "count_model_jobs",
+    "cancel_model_job",
     "set_model_job_status",
     "append_model_job_log",
     "delete_model_job",
@@ -75,6 +78,7 @@ __all__ = [
     "get_prediction_job",
     "list_prediction_jobs",
     "count_prediction_jobs",
+    "cancel_prediction_job",
     "set_prediction_job_status",
     "delete_prediction_job",
     "prediction_job_to_schema",

@@ -5,8 +5,9 @@ from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ...schemas import JobStatus
 from ...schemas.prediction import PredictionJob as PredictionJobSchema
-from ..models import PredictionJob
+from ..models import PredictionJob, utcnow
 
 
 def create_prediction_job(
@@ -83,6 +84,22 @@ def set_prediction_job_status(
     db.commit()
     db.refresh(job)
     return job
+
+
+def cancel_prediction_job(db: Session, *, job_id: int) -> PredictionJob | None:
+    job = db.get(PredictionJob, job_id)
+    if job is None:
+        return None
+
+    if job.status not in {JobStatus.QUEUED.value, JobStatus.RUNNING.value}:
+        return None
+
+    return set_prediction_job_status(
+        db=db,
+        job_id=job_id,
+        status=JobStatus.CANCELED.value,
+        finished_at=utcnow(),
+    )
 
 
 def delete_prediction_job(db: Session, job_id: int) -> bool:

@@ -5,8 +5,9 @@ from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ...schemas import JobStatus
 from ...schemas.modeling import ModelJob as ModelJobSchema
-from ..models import ModelJob
+from ..models import ModelJob, utcnow
 
 
 def create_model_job(
@@ -87,6 +88,20 @@ def set_model_job_status(
     db.refresh(job)
     return job
 
+def cancel_model_job(db: Session, *, job_id: int) -> ModelJob | None:
+    job = db.get(ModelJob, job_id)
+    if job is None:
+        return None
+
+    if job.status not in {JobStatus.QUEUED.value, JobStatus.RUNNING.value}:
+        return None
+
+    return set_model_job_status(
+        db=db,
+        job_id=job_id,
+        status=JobStatus.CANCELED.value,
+        finished_at=utcnow(),
+    )
 
 def append_model_job_log(db: Session, *, job_id: int, message: str) -> ModelJob | None:
     job = db.get(ModelJob, job_id)
