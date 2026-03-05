@@ -1,6 +1,6 @@
 from enum import Enum
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from .common import ID, NonNegativeInt, PageLimit, SchemaModel, Timestamp
 
@@ -40,7 +40,19 @@ class Dataset(SchemaModel):
     row_count: NonNegativeInt
     column_count: NonNegativeInt
     columns: list[ColumnInfo] = Field(default_factory=list)
+    y_columns: list[str] = Field(default_factory=list)
+    is_time_series: bool = False
     created_at: Timestamp
+
+    @model_validator(mode="after")
+    def _validate_y_columns(self) -> "Dataset":
+        cleaned = [name.strip() for name in self.y_columns]
+        if any(not name for name in cleaned):
+            raise ValueError("y_columns entries must be non-empty")
+        if len(set(cleaned)) != len(cleaned):
+            raise ValueError("y_columns entries must be unique")
+        self.y_columns = cleaned
+        return self
 
 
 class DatasetStats(SchemaModel):
@@ -55,3 +67,37 @@ class DatasetListResponse(SchemaModel):
     total: NonNegativeInt
     limit: PageLimit = 50
     offset: NonNegativeInt = 0
+
+
+class DatasetSettings(SchemaModel):
+    dataset_id: ID
+    y_columns: list[str] = Field(default_factory=list)
+    is_time_series: bool = False
+
+    @model_validator(mode="after")
+    def _validate_y_columns(self) -> "DatasetSettings":
+        cleaned = [name.strip() for name in self.y_columns]
+        if any(not name for name in cleaned):
+            raise ValueError("y_columns entries must be non-empty")
+        if len(set(cleaned)) != len(cleaned):
+            raise ValueError("y_columns entries must be unique")
+        self.y_columns = cleaned
+        return self
+
+
+class DatasetSettingsUpdate(SchemaModel):
+    y_columns: list[str] | None = None
+    is_time_series: bool | None = None
+
+    @model_validator(mode="after")
+    def _validate_update(self) -> "DatasetSettingsUpdate":
+        if self.y_columns is None and self.is_time_series is None:
+            raise ValueError("at least one settings field must be provided")
+        if self.y_columns is not None:
+            cleaned = [name.strip() for name in self.y_columns]
+            if any(not name for name in cleaned):
+                raise ValueError("y_columns entries must be non-empty")
+            if len(set(cleaned)) != len(cleaned):
+                raise ValueError("y_columns entries must be unique")
+            self.y_columns = cleaned
+        return self

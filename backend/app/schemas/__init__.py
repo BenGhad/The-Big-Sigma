@@ -5,6 +5,8 @@ from .dataset import (
     ColumnStats,
     Dataset,
     DatasetListResponse,
+    DatasetSettings,
+    DatasetSettingsUpdate,
     DatasetStats,
     NumericSummary,
 )
@@ -67,6 +69,8 @@ __all__ = [
     "ColumnStats",
     "Dataset",
     "DatasetListResponse",
+    "DatasetSettings",
+    "DatasetSettingsUpdate",
     "DatasetStats",
     "ErrorBody",
     "FillNullsMethod",

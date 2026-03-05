@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import math
 from datetime import datetime
 from pathlib import Path
@@ -32,6 +33,8 @@ from ...schemas.dataset import (
     ColumnStats,
     Dataset as DatasetSchema,
     DatasetListResponse,
+    DatasetSettings,
+    DatasetSettingsUpdate,
     DatasetStats,
     NumericSummary,
 )
@@ -57,6 +60,96 @@ DATASET_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
 def _dataset_csv_path(dataset_id: int) -> Path:
     return DATASET_STORAGE_DIR / f"{dataset_id}.csv"
+
+
+def _dataset_settings_path(dataset_id: int) -> Path:
+    return DATASET_STORAGE_DIR / f"{dataset_id}.meta.json"
+
+
+def _clean_column_list(columns: list[str]) -> list[str]:
+    cleaned = [name.strip() for name in columns]
+    if any(not name for name in cleaned):
+        raise ValueError("y_columns entries must be non-empty")
+    if len(set(cleaned)) != len(cleaned):
+        raise ValueError("y_columns entries must be unique")
+    return cleaned
+
+
+def _validate_y_columns_against_dataset(columns_meta: list[dict[str, Any]], y_columns: list[str]) -> None:
+    if not y_columns:
+        return
+    allowed_columns = {
+        col["name"]
+        for col in columns_meta
+        if isinstance(col, dict) and isinstance(col.get("name"), str) and col.get("name")
+    }
+    unknown = [name for name in y_columns if name not in allowed_columns]
+    if unknown:
+        raise ValueError(f"Unknown y_columns: {unknown}")
+
+
+def _parse_form_y_columns(raw: str | None) -> list[str]:
+    if raw is None:
+        return []
+    if raw.strip() == "":
+        return []
+    candidates = [part.strip() for part in raw.split(",")]
+    return _clean_column_list([name for name in candidates if name])
+
+
+def _coerce_bool_like(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "t", "yes", "y"}:
+            return True
+        if lowered in {"0", "false", "f", "no", "n"}:
+            return False
+    return bool(value)
+
+
+def _read_dataset_settings(dataset_id: int, columns_meta: list[dict[str, Any]]) -> dict[str, Any]:
+    path = _dataset_settings_path(dataset_id)
+    defaults = {"y_columns": [], "is_time_series": False}
+    if not path.exists():
+        return defaults
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return defaults
+
+    y_columns_raw = payload.get("y_columns", [])
+    if isinstance(y_columns_raw, list):
+        y_columns = [
+            value.strip()
+            for value in y_columns_raw
+            if isinstance(value, str) and value.strip()
+        ]
+    else:
+        y_columns = []
+
+    y_columns = list(dict.fromkeys(y_columns))
+    try:
+        _validate_y_columns_against_dataset(columns_meta, y_columns)
+    except ValueError:
+        y_columns = []
+
+    is_time_series = _coerce_bool_like(payload.get("is_time_series", False))
+    return {"y_columns": y_columns, "is_time_series": is_time_series}
+
+
+def _write_dataset_settings(dataset_id: int, settings: dict[str, Any]) -> None:
+    path = _dataset_settings_path(dataset_id)
+    path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+
+
+def _dataset_with_settings_schema(dataset: Any) -> DatasetSchema:
+    base = dataset_to_schema(dataset).model_dump(mode="python")
+    settings = _read_dataset_settings(dataset.id, list(dataset.columns_json or []))
+    base.update(settings)
+    return DatasetSchema.model_validate(base)
 
 
 def _looks_like_int(value: str) -> bool:
@@ -255,6 +348,24 @@ def _matches_filter(
     return False
 
 
+def _matches_filter_group(
+    row: dict[str, Any],
+    filter_group: list[FilterClause],
+    dtype_by_column: dict[str, ColumnDType],
+) -> bool:
+    return all(_matches_filter(row, clause, dtype_by_column) for clause in filter_group)
+
+
+def _matches_filter_groups(
+    row: dict[str, Any],
+    filter_groups: list[list[FilterClause]] | None,
+    dtype_by_column: dict[str, ColumnDType],
+) -> bool:
+    if not filter_groups:
+        return True
+    return any(_matches_filter_group(row, group, dtype_by_column) for group in filter_groups)
+
+
 def _sort_key(value: Any) -> tuple[int, Any]:
     if value is None:
         return (1, "")
@@ -311,11 +422,63 @@ def _validate_select_columns(
     return None
 
 
-def _run_query(dataset: Any, query: QuerySpec) -> QueryResponse:
-    columns_meta = list(dataset.columns_json or [])
+def _validate_query_y_columns(
+    columns_meta: list[dict[str, Any]],
+    y_columns: list[str] | None,
+) -> str | None:
+    if not y_columns:
+        return None
+    try:
+        _validate_y_columns_against_dataset(columns_meta, y_columns)
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
+def _validate_query_clauses_against_select(query: QuerySpec) -> str | None:
+    if not query.select:
+        return None
+    selected = set(query.select)
+
+    if query.sort:
+        invalid_sort = [clause.column for clause in query.sort if clause.column not in selected]
+        if invalid_sort:
+            return f"Sort columns must be selected columns when select is set: {invalid_sort}"
+
+    if query.filters:
+        invalid_filter = [
+            clause.column
+            for filter_group in query.filters
+            for clause in filter_group
+            if clause.column not in selected
+        ]
+        if invalid_filter:
+            return f"Filter columns must be selected columns when select is set: {invalid_filter}"
+
+    return None
+
+
+def _validate_query_for_dataset(columns_meta: list[dict[str, Any]], query: QuerySpec) -> str | None:
     select_error = _validate_select_columns(columns_meta, query.select)
     if select_error is not None:
-        raise ValueError(select_error)
+        return select_error
+
+    y_cols_error = _validate_query_y_columns(columns_meta, query.y_columns)
+    if y_cols_error is not None:
+        return y_cols_error
+
+    clause_error = _validate_query_clauses_against_select(query)
+    if clause_error is not None:
+        return clause_error
+
+    return None
+
+
+def _run_query(dataset: Any, query: QuerySpec) -> QueryResponse:
+    columns_meta = list(dataset.columns_json or [])
+    query_error = _validate_query_for_dataset(columns_meta, query)
+    if query_error is not None:
+        raise ValueError(query_error)
 
     rows = _load_dataset_rows(dataset.id, columns_meta)
     dtype_by_column = {
@@ -328,27 +491,32 @@ def _run_query(dataset: Any, query: QuerySpec) -> QueryResponse:
         rows = [
             row
             for row in rows
-            if all(_matches_filter(row, clause, dtype_by_column) for clause in query.filters)
+            if _matches_filter_groups(row, query.filters, dtype_by_column)
         ]
 
     total_rows = len(rows)
     _apply_sort(rows, query.sort)
 
-    paged_rows = rows[query.offset : query.offset + query.limit]
+    applied_limit = query.limit if query.limit is not None else 50
+    applied_offset = query.offset if query.offset is not None else 0
+
+    paged_rows = rows[applied_offset : applied_offset + applied_limit]
     if query.select:
         paged_rows = [{column: row.get(column) for column in query.select} for row in paged_rows]
 
     returned_rows = len(paged_rows)
-    next_offset = query.offset + returned_rows
+    next_offset = applied_offset + returned_rows
     if next_offset >= total_rows:
         next_offset = None
+
+    applied_query = query.model_copy(update={"limit": applied_limit, "offset": applied_offset})
 
     return QueryResponse(
         rows=paged_rows,
         total_rows=total_rows,
         returned_rows=returned_rows,
         next_offset=next_offset,
-        applied_query=query,
+        applied_query=applied_query,
     )
 
 
@@ -364,6 +532,8 @@ def _merge_saved_view_query(base: QuerySpec, override: QuerySpecPatch | None) ->
 async def create_dataset_endpoint(
     file: UploadFile = File(...),
     name: str | None = Form(default=None),
+    y_columns: str | None = Form(default=None),
+    is_time_series: bool = Form(default=False),
     db: Session = Depends(get_db),
 ) -> DatasetSchema:
     if not file.filename:
@@ -417,6 +587,16 @@ async def create_dataset_endpoint(
     columns = _build_column_metadata(fieldnames, rows)
     dataset_name = (name or Path(file.filename).stem).strip() or "dataset"
 
+    try:
+        parsed_y_columns = _parse_form_y_columns(y_columns)
+        _validate_y_columns_against_dataset(columns, parsed_y_columns)
+    except ValueError as exc:
+        raise ApiException(
+            status_code=422,
+            code="INVALID_DATASET_SETTINGS",
+            message=str(exc),
+        )
+
     dataset = create_dataset(
         db,
         name=dataset_name,
@@ -437,8 +617,57 @@ async def create_dataset_endpoint(
             message="Failed to persist dataset file",
             details={"reason": str(exc)},
         )
+    try:
+        _write_dataset_settings(
+            dataset.id,
+            {
+                "y_columns": parsed_y_columns,
+                "is_time_series": is_time_series,
+            },
+        )
+    except OSError as exc:
+        if csv_path.exists():
+            try:
+                csv_path.unlink()
+            except OSError:
+                pass
+        delete_dataset(db, dataset.id)
+        raise ApiException(
+            status_code=500,
+            code="DATASET_SETTINGS_WRITE_FAILED",
+            message="Failed to persist dataset settings",
+            details={"reason": str(exc)},
+        )
 
-    return dataset_to_schema(dataset)
+    try:
+        default_view_query = QuerySpec(y_columns=parsed_y_columns)
+        create_saved_view(
+            db,
+            dataset_id=dataset.id,
+            name="Default View",
+            query=default_view_query.model_dump(mode="python", exclude_none=True),
+        )
+    except Exception as exc:
+        if csv_path.exists():
+            try:
+                csv_path.unlink()
+            except OSError:
+                pass
+        settings_path = _dataset_settings_path(dataset.id)
+        if settings_path.exists():
+            try:
+                settings_path.unlink()
+            except OSError:
+                pass
+        delete_dataset(db, dataset.id)
+        raise ApiException(
+            status_code=500,
+            code="DEFAULT_VIEW_CREATE_FAILED",
+            message="Dataset was created but default view creation failed",
+            details={"reason": str(exc)},
+        )
+
+    return _dataset_with_settings_schema(dataset)
 
 
 @router.get("/datasets", response_model=DatasetListResponse)
@@ -450,7 +679,7 @@ def list_datasets_endpoint(
     datasets = list_datasets(db, limit=limit, offset=offset)
     total = count_datasets(db)
     return DatasetListResponse(
-        items=[dataset_to_schema(dataset) for dataset in datasets],
+        items=[_dataset_with_settings_schema(dataset) for dataset in datasets],
         total=total,
         limit=limit,
         offset=offset,
@@ -469,7 +698,83 @@ def get_dataset_endpoint(
             code="DATASET_NOT_FOUND",
             message=f"Dataset {dataset_id} was not found",
         )
-    return dataset_to_schema(dataset)
+    return _dataset_with_settings_schema(dataset)
+
+
+@router.get("/datasets/{dataset_id}/settings", response_model=DatasetSettings)
+def get_dataset_settings_endpoint(
+    dataset_id: int,
+    db: Session = Depends(get_db),
+) -> DatasetSettings:
+    dataset = get_dataset(db, dataset_id)
+    if dataset is None:
+        raise ApiException(
+            status_code=404,
+            code="DATASET_NOT_FOUND",
+            message=f"Dataset {dataset_id} was not found",
+        )
+
+    settings = _read_dataset_settings(dataset.id, list(dataset.columns_json or []))
+    return DatasetSettings(
+        dataset_id=dataset.id,
+        y_columns=settings["y_columns"],
+        is_time_series=settings["is_time_series"],
+    )
+
+
+@router.put("/datasets/{dataset_id}/settings", response_model=DatasetSettings)
+def update_dataset_settings_endpoint(
+    dataset_id: int,
+    payload: DatasetSettingsUpdate,
+    db: Session = Depends(get_db),
+) -> DatasetSettings:
+    dataset = get_dataset(db, dataset_id)
+    if dataset is None:
+        raise ApiException(
+            status_code=404,
+            code="DATASET_NOT_FOUND",
+            message=f"Dataset {dataset_id} was not found",
+        )
+
+    columns_meta = list(dataset.columns_json or [])
+    current = _read_dataset_settings(dataset.id, columns_meta)
+    next_y_columns = list(current["y_columns"])
+    next_is_time_series = bool(current["is_time_series"])
+
+    if payload.y_columns is not None:
+        try:
+            next_y_columns = _clean_column_list(payload.y_columns)
+            _validate_y_columns_against_dataset(columns_meta, next_y_columns)
+        except ValueError as exc:
+            raise ApiException(
+                status_code=422,
+                code="INVALID_DATASET_SETTINGS",
+                message=str(exc),
+            )
+    if payload.is_time_series is not None:
+        next_is_time_series = payload.is_time_series
+
+    try:
+        _write_dataset_settings(
+            dataset.id,
+            {
+                "y_columns": next_y_columns,
+                "is_time_series": next_is_time_series,
+            },
+        )
+    except OSError as exc:
+        raise ApiException(
+            status_code=500,
+            code="DATASET_SETTINGS_WRITE_FAILED",
+            message="Failed to persist dataset settings",
+            details={"reason": str(exc)},
+        )
+
+    return DatasetSettings(
+        dataset_id=dataset.id,
+        y_columns=next_y_columns,
+        is_time_series=next_is_time_series,
+    )
 
 
 @router.delete("/datasets/{dataset_id}", status_code=204)
@@ -494,6 +799,18 @@ def delete_dataset_endpoint(
                 status_code=500,
                 code="DATASET_FILE_DELETE_FAILED",
                 message=f"Dataset {dataset_id} was deleted, but its CSV file could not be removed",
+                details={"reason": str(exc)},
+            )
+
+    settings_path = _dataset_settings_path(dataset_id)
+    if settings_path.exists():
+        try:
+            settings_path.unlink()
+        except OSError as exc:
+            raise ApiException(
+                status_code=500,
+                code="DATASET_SETTINGS_DELETE_FAILED",
+                message=f"Dataset {dataset_id} was deleted, but its settings file could not be removed",
                 details={"reason": str(exc)},
             )
     return Response(status_code=204)
@@ -608,11 +925,19 @@ def create_saved_view_endpoint(
             message=f"Dataset {dataset_id} was not found",
         )
 
+    query_error = _validate_query_for_dataset(list(dataset.columns_json or []), payload.query)
+    if query_error is not None:
+        raise ApiException(
+            status_code=422,
+            code="INVALID_QUERY",
+            message=query_error,
+        )
+
     saved_view = create_saved_view(
         db,
         dataset_id=dataset_id,
         name=payload.name.strip(),
-        query=payload.query.model_dump(mode="python"),
+        query=payload.query.model_dump(mode="python", exclude_none=True),
     )
     return saved_view_to_schema(saved_view)
 
@@ -661,11 +986,35 @@ def update_saved_view_endpoint(
     payload: SavedViewUpdate,
     db: Session = Depends(get_db),
 ) -> SavedView:
+    current = get_saved_view(db, view_id)
+    if current is None:
+        raise ApiException(
+            status_code=404,
+            code="VIEW_NOT_FOUND",
+            message=f"Saved view {view_id} was not found",
+        )
+
+    if payload.query is not None:
+        dataset = get_dataset(db, current.dataset_id)
+        if dataset is None:
+            raise ApiException(
+                status_code=404,
+                code="DATASET_NOT_FOUND",
+                message=f"Dataset {current.dataset_id} for saved view {view_id} was not found",
+            )
+        query_error = _validate_query_for_dataset(list(dataset.columns_json or []), payload.query)
+        if query_error is not None:
+            raise ApiException(
+                status_code=422,
+                code="INVALID_QUERY",
+                message=query_error,
+            )
+
     updated = update_saved_view(
         db,
         saved_view_id=view_id,
         name=payload.name.strip() if payload.name is not None else None,
-        query=payload.query.model_dump(mode="python") if payload.query is not None else None,
+        query=payload.query.model_dump(mode="python", exclude_none=True) if payload.query is not None else None,
     )
     if updated is None:
         raise ApiException(

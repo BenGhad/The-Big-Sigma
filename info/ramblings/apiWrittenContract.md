@@ -87,10 +87,11 @@ type DatasetStats = {
 ```ts
 type QuerySpec = {
   select?: string[]              // columns to return (default = all)
-  filters?: FilterClause[]       // SQL-like elements for replayability
+  y_columns?: string[]           // target columns for this view/query context
+  filters?: FilterClause[][]     // OR of AND clauses: outer list is OR, each inner list is AND
   sort?: SortClause[]            // ORDER BY
-  limit?: number                 // default 50, max 1000
-  offset?: number                // default 0
+  limit?: number                 // table pagination override (default 50, max 1000)
+  offset?: number                // table pagination override (default 0)
 
 
   // UX helper maybe
@@ -99,10 +100,11 @@ type QuerySpec = {
 
 type QuerySpecPatch = {
   select?: string[]              // columns to return
-  filters?: FilterClause[]
+  y_columns?: string[]           // target columns for this view/query context
+  filters?: FilterClause[][]
   sort?: SortClause[]
-  limit?: number                 // max 1000
-  offset?: number
+  limit?: number                 // table pagination override, max 1000
+  offset?: number                // table pagination override
   highlights?: HighlightRule[]
 }
 
@@ -121,6 +123,12 @@ type FilterClause = {
   value?: FilterValue | FilterValue[]
 }
 
+// semantics:
+// filters = [
+//   [a, b],   // a AND b
+//   [c]       // OR c
+// ]
+
 type SortClause = {
   column: string
   direction: "asc" | "desc"
@@ -137,7 +145,7 @@ type SavedView = {
   id: ID
   dataset_id: ID
   name: string
-  query: QuerySpec
+  query: QuerySpec               // persisted reusable view logic (+ optional y_columns)
   created_at: ISODateTime
 }
 

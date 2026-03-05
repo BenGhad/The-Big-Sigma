@@ -44,3 +44,4 @@ frontend/build/
 
 
 backend/big_sigma.db
+backend/data/datasets/*

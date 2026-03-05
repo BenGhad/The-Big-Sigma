@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from .common import ID, NonNegativeInt, PageLimit, SchemaModel, Timestamp
 
@@ -83,43 +83,85 @@ class HighlightRule(SchemaModel):
         return self
 
 
+def _clean_column_list(columns: list[str], *, field_name: str) -> list[str]:
+    cleaned = [col.strip() for col in columns]
+    if any(not col for col in cleaned):
+        raise ValueError(f"{field_name} entries must be non-empty column names")
+    if len(set(cleaned)) != len(cleaned):
+        raise ValueError(f"{field_name} entries must be unique")
+    return cleaned
+
+
+def _clean_filter_groups(
+    filter_groups: list[list[FilterClause]],
+    *,
+    field_name: str,
+) -> list[list[FilterClause]]:
+    for index, group in enumerate(filter_groups):
+        if len(group) == 0:
+            raise ValueError(f"{field_name}[{index}] must contain at least one filter clause")
+    return filter_groups
+
+
 class QuerySpec(SchemaModel):
     select: list[str] | None = None
-    filters: list[FilterClause] | None = None
+    filters: list[list[FilterClause]] | None = None
     sort: list[SortClause] | None = None
-    limit: PageLimit = 50
-    offset: NonNegativeInt = 0
+    limit: PageLimit | None = None
+    offset: NonNegativeInt | None = None
+    y_columns: list[str] | None = None
     highlights: list[HighlightRule] | None = None
+
+    @field_validator("filters", mode="before")
+    @classmethod
+    def _coerce_legacy_filter_shape(
+        cls,
+        value: Any,
+    ) -> Any:
+        if isinstance(value, list) and value:
+            if all(isinstance(item, (FilterClause, dict)) for item in value):
+                return [value]
+        return value
 
     @model_validator(mode="after")
     def _validate_unique_select(self) -> "QuerySpec":
         if self.select is not None:
-            cleaned = [col.strip() for col in self.select]
-            if any(not col for col in cleaned):
-                raise ValueError("select entries must be non-empty column names")
-            if len(set(cleaned)) != len(cleaned):
-                raise ValueError("select entries must be unique")
-            self.select = cleaned
+            self.select = _clean_column_list(self.select, field_name="select")
+        if self.y_columns is not None:
+            self.y_columns = _clean_column_list(self.y_columns, field_name="y_columns")
+        if self.filters is not None:
+            self.filters = _clean_filter_groups(self.filters, field_name="filters")
         return self
 
 
 class QuerySpecPatch(SchemaModel):
     select: list[str] | None = None
-    filters: list[FilterClause] | None = None
+    filters: list[list[FilterClause]] | None = None
     sort: list[SortClause] | None = None
     limit: PageLimit | None = None
     offset: NonNegativeInt | None = None
+    y_columns: list[str] | None = None
     highlights: list[HighlightRule] | None = None
+
+    @field_validator("filters", mode="before")
+    @classmethod
+    def _coerce_legacy_filter_shape(
+        cls,
+        value: Any,
+    ) -> Any:
+        if isinstance(value, list) and value:
+            if all(isinstance(item, (FilterClause, dict)) for item in value):
+                return [value]
+        return value
 
     @model_validator(mode="after")
     def _validate_unique_select(self) -> "QuerySpecPatch":
         if self.select is not None:
-            cleaned = [col.strip() for col in self.select]
-            if any(not col for col in cleaned):
-                raise ValueError("select entries must be non-empty column names")
-            if len(set(cleaned)) != len(cleaned):
-                raise ValueError("select entries must be unique")
-            self.select = cleaned
+            self.select = _clean_column_list(self.select, field_name="select")
+        if self.y_columns is not None:
+            self.y_columns = _clean_column_list(self.y_columns, field_name="y_columns")
+        if self.filters is not None:
+            self.filters = _clean_filter_groups(self.filters, field_name="filters")
         return self
 
 
