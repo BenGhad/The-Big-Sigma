@@ -29,7 +29,7 @@ from ...schemas import (
 router = APIRouter(prefix="/v1", tags=["models"])
 
 
-@router.get("/models", response_model=ModelArtifactListResponse, status_code=status.HTTP_200_OK)
+@router.get(path="/models", response_model=ModelArtifactListResponse, status_code=status.HTTP_200_OK)
 def list_models_endpoint(
     dataset_id: int | None = Query(default=None, ge=1),
     model_type: ModelType | None = Query(default=None),
